@@ -1,7 +1,8 @@
-import * as React from "react";
 import Draggable, { DraggableEventHandler, DraggableProps } from "react-draggable";
 import { Enable, Resizable, ResizeDirection } from "re-resizable";
+import * as React from "react";
 import { flushSync } from "react-dom";
+import "./index.css";
 
 export type Grid = [number, number];
 
@@ -60,6 +61,8 @@ type State = {
   };
   maxWidth?: number | string;
   maxHeight?: number | string;
+  snapX: number;
+  snapY: number;
 };
 
 type MaxSize = {
@@ -193,6 +196,10 @@ interface DefaultProps {
   scale: number;
 }
 
+const VERTICAL_DIRECTIONS = ["left", "right", "vertical-center"];
+const HORIZONTAL_DIRECTIONS = ["top", "bottom", "horizontal-center"];
+const SNAP_THRESHOLD = 5;
+
 export class Rnd extends React.PureComponent<Props, State> {
   public static defaultProps: DefaultProps = {
     maxWidth: Number.MAX_SAFE_INTEGER,
@@ -211,6 +218,7 @@ export class Rnd extends React.PureComponent<Props, State> {
   offsetFromParent = { left: 0, top: 0 };
   resizableElement: { current: HTMLElement | null } = { current: null };
   originalPosition = { x: 0, y: 0 };
+  elementGrid?: HTMLDivElement;
 
   constructor(props: Props) {
     super(props);
@@ -222,10 +230,11 @@ export class Rnd extends React.PureComponent<Props, State> {
         bottom: 0,
         left: 0,
       },
+      snapX: 0,
+      snapY: 0,
       maxWidth: props.maxWidth,
       maxHeight: props.maxHeight,
     };
-
     this.onResizeStart = this.onResizeStart.bind(this);
     this.onResize = this.onResize.bind(this);
     this.onResizeStop = this.onResizeStop.bind(this);
@@ -243,6 +252,7 @@ export class Rnd extends React.PureComponent<Props, State> {
       x: x - left,
       y: y - top,
     });
+    this.updateGrid();
     // HACK: Apply position adjustment
     this.forceUpdate();
   }
@@ -296,6 +306,9 @@ export class Rnd extends React.PureComponent<Props, State> {
   }
 
   onDragStart(e: RndDragEvent, data: DraggableData) {
+    this.updateGrid();
+    this.checkShouldSnap();
+
     if (this.props.onDragStart) {
       this.props.onDragStart(e, data);
     }
@@ -357,6 +370,9 @@ export class Rnd extends React.PureComponent<Props, State> {
   }
 
   onDrag(e: RndDragEvent, data: DraggableData) {
+    this.updateGrid();
+    this.checkShouldSnap();
+    this.updatePosition(this.originalPosition);
     if (!this.props.onDrag) return;
     const { left, top } = this.offsetFromParent;
     if (!this.props.dragAxis || this.props.dragAxis === "both") {
@@ -368,7 +384,170 @@ export class Rnd extends React.PureComponent<Props, State> {
     }
   }
 
+  updateGrid = () => {
+    if (!this.elementGrid) return;
+    this.updateElementHorizontalGrid();
+    this.updateElementVerticalGrid();
+  };
+
+  checkShouldSnap = () => {
+    const rnds = document.getElementsByClassName("rnd-wrapper");
+    const shouldSnap = {
+      top: false,
+      bottom: false,
+      verticalCenter: false,
+      left: false,
+      right: false,
+      horizontalCenter: false,
+    };
+    const shouldSnapTo = {
+      top: false,
+      bottom: false,
+      ["vertical-center"]: false,
+      left: false,
+      right: false,
+      ["horizontal-center"]: false,
+    };
+
+    if (!rnds) return shouldSnap;
+
+    Array.from(rnds).forEach((rnd) => {
+      const grid = rnd.getElementsByClassName("rnd-grid")?.item(0);
+      if (!grid || grid === this.elementGrid) return;
+
+      Array.from(grid.children).forEach((elementToSnapTo) => {
+        const elementToSnapToDir = elementToSnapTo.getAttribute("dir") as
+          | "top"
+          | "bottom"
+          | "left"
+          | "right"
+          | "horizontal-center"
+          | "vertical-center";
+
+        if (this.elementGrid) {
+          Array.from(this.elementGrid?.children).forEach((elementToSnap) => {
+            const elementToSnapDir = elementToSnap.getAttribute("dir");
+            if (elementToSnapTo && elementToSnap) {
+              const rectToSnapTo = elementToSnapTo.getBoundingClientRect();
+              const rectToSnap = elementToSnap.getBoundingClientRect();
+              const shouldSnapTop =
+                (Math.abs(rectToSnapTo.top - rectToSnap.top) <= SNAP_THRESHOLD ||
+                  Math.abs(rectToSnapTo.bottom - rectToSnap.top) <= SNAP_THRESHOLD) &&
+                HORIZONTAL_DIRECTIONS.includes(elementToSnapToDir);
+              const shouldSnapBottom =
+                (Math.abs(rectToSnapTo.bottom - rectToSnap.bottom) <= SNAP_THRESHOLD ||
+                  Math.abs(rectToSnapTo.top - rectToSnap.bottom) <= SNAP_THRESHOLD) &&
+                HORIZONTAL_DIRECTIONS.includes(elementToSnapToDir);
+              const shouldSnapLeft =
+                Math.abs(rectToSnapTo.left - rectToSnap.left) <= SNAP_THRESHOLD ||
+                (Math.abs(rectToSnapTo.right - rectToSnap.left) <= SNAP_THRESHOLD &&
+                  VERTICAL_DIRECTIONS.includes(elementToSnapToDir));
+              const shouldSnapRight =
+                (Math.abs(rectToSnapTo.right - rectToSnap.right) <= SNAP_THRESHOLD ||
+                  Math.abs(rectToSnapTo.left - rectToSnap.right) <= SNAP_THRESHOLD) &&
+                VERTICAL_DIRECTIONS.includes(elementToSnapToDir);
+
+              switch (elementToSnapDir) {
+                case "top":
+                  shouldSnap.top ||= shouldSnapTop;
+                  if (shouldSnapTop) {
+                    shouldSnapTo[elementToSnapToDir] = true;
+                  }
+                  break;
+                case "bottom":
+                  shouldSnap.bottom ||= shouldSnapBottom;
+                  if (shouldSnapBottom) {
+                    shouldSnapTo[elementToSnapToDir] = true;
+                  }
+                  break;
+                case "left":
+                  shouldSnap.left ||= shouldSnapLeft;
+                  if (shouldSnapLeft) {
+                    shouldSnapTo[elementToSnapToDir] = true;
+                  }
+                  break;
+                case "right":
+                  shouldSnap.right ||= shouldSnapRight;
+                  if (shouldSnapRight) {
+                    shouldSnapTo[elementToSnapToDir] = true;
+                  }
+                  break;
+                case "vertical-center":
+                  const shouldSnapVertically = shouldSnapLeft || shouldSnapRight;
+                  shouldSnap.verticalCenter ||= shouldSnapVertically;
+                  if (shouldSnapVertically) {
+                    shouldSnapTo[elementToSnapToDir] = true;
+                  }
+                  break;
+                case "horizontal-center":
+                  const shouldSnapHorizontally = shouldSnapTop || shouldSnapBottom;
+                  shouldSnap.horizontalCenter ||= shouldSnapHorizontally;
+                  if (shouldSnapHorizontally) {
+                    shouldSnapTo[elementToSnapToDir] = true;
+                  }
+                  break;
+                default:
+                  break;
+              }
+
+              const distancesY = [
+                rectToSnapTo.top - rectToSnap.top,
+                rectToSnapTo.bottom - rectToSnap.top,
+                rectToSnapTo.bottom - rectToSnap.bottom,
+                rectToSnapTo.top - rectToSnap.bottom,
+              ];
+
+              const closestVerticalDistance = Math.min(...distancesY.map((i) => Math.abs(i)));
+
+              const snapY = distancesY.find((t) => Math.abs(t) === closestVerticalDistance) || 0;
+
+              if (Math.abs(snapY) <= SNAP_THRESHOLD && !this.state.snapY) {
+                this.setState({
+                  snapY: snapY,
+                });
+              }
+            }
+          });
+
+          (elementToSnapTo as HTMLSpanElement).style.backgroundColor =
+            shouldSnapTo[elementToSnapToDir] && (this.draggable.state as { dragging: boolean }).dragging
+              ? "blue"
+              : "transparent";
+        }
+      });
+    });
+
+    return shouldSnap;
+  };
+
+  updateElementHorizontalGrid = () => {
+    HORIZONTAL_DIRECTIONS.forEach((dir) => {
+      const screenWidth = window.innerWidth;
+      const elements = this.elementGrid?.getElementsByClassName(dir);
+      if (!elements) return;
+      const gridLine = elements.item(0) as HTMLSpanElement;
+      const wrapperRect = this.resizableElement.current?.getBoundingClientRect();
+      if (!gridLine || !wrapperRect) return;
+      gridLine.style.width = `${screenWidth}px`;
+      gridLine.style.left = `${wrapperRect.left * -1}px`;
+    });
+  };
+
+  updateElementVerticalGrid = () => {
+    VERTICAL_DIRECTIONS.forEach((dir) => {
+      const screenHeight = window.innerHeight;
+      const elements = this.elementGrid?.getElementsByClassName(dir);
+      if (!elements) return;
+      const gridLine = elements.item(0) as HTMLSpanElement;
+      const wrapperRect = this.resizableElement.current?.getBoundingClientRect();
+      if (!gridLine || !wrapperRect) return;
+      gridLine.style.height = `${screenHeight}px`;
+      gridLine.style.top = `${wrapperRect.top * -1}px`;
+    });
+  };
+
   onDragStop(e: RndDragEvent, data: DraggableData) {
+    this.checkShouldSnap();
     if (!this.props.onDragStop) return;
     const { left, top } = this.offsetFromParent;
     if (!this.props.dragAxis || this.props.dragAxis === "both") {
@@ -572,6 +751,11 @@ export class Rnd extends React.PureComponent<Props, State> {
     };
   }
 
+  setElementGridRef = (ref: HTMLDivElement) => {
+    if (!ref) return;
+    this.elementGrid = ref;
+  };
+
   render() {
     const {
       disableDragging,
@@ -635,6 +819,7 @@ export class Rnd extends React.PureComponent<Props, State> {
         handle={dragHandleClassName ? `.${dragHandleClassName}` : undefined}
         defaultPosition={defaultValue}
         onMouseDown={onMouseDown}
+        defaultClassName="rnd-wrapper"
         // @ts-expect-error
         onMouseUp={onMouseUp}
         onStart={this.onDragStart}
@@ -681,6 +866,11 @@ export class Rnd extends React.PureComponent<Props, State> {
           handleComponent={resizeHandleComponent}
           scale={this.props.scale}
         >
+          <div ref={this.setElementGridRef} className="rnd-grid">
+            {[...VERTICAL_DIRECTIONS, ...HORIZONTAL_DIRECTIONS].map((dir) => {
+              return <span className={dir} dir={dir}></span>;
+            })}
+          </div>
           {children}
         </Resizable>
       </Draggable>
